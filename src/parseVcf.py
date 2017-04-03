@@ -17,7 +17,6 @@ import numpy  as np
 import time
 from csv import DictWriter
 import math
-import cPickle
 import unittest
 import logging
 import pandas as pd
@@ -34,7 +33,7 @@ db1=declarative_base() # classes mapping to persistent database inherit from thi
 
 class summaryStore():
         """ a class for storing the minor allele frequencies and other statistics from single or groups of samples. """        
-        def __init__(self, db, engineName, persistenceDir):
+        def __init__(self, db, engineName, dbDir):
             """ constructor
             
             db = instance of the orm
@@ -58,7 +57,7 @@ class summaryStore():
             test_connstring="sqlite:///%s" % test_path
             """
     
-            engineName=engineName.replace('<<DEFAULT>>', persistenceDir)
+            engineName=engineName.replace('<<DEFAULT>>', dbDir)
             ## create or open the database using sql alchemy
             
             self.Base = db1                              # instance of the ORM
@@ -67,8 +66,8 @@ class summaryStore():
             Session = sessionmaker(bind=self.engine)    # class
             self.session=Session()           
         def store(self, selectionDescription, mean_maf, mean_mlp, nBases, mean_depth=None ):
-                """ stores the selection, provided that selectionDescription does not already exist """                
-                this_sstat=summaryStatistics(selectionDescription=selectionDescription, mean_maf=mean_maf, mean_mlp=mean_mlp, mean_depth=mean_depth, nBases=nBases)
+                """ stores the selection, provided that selectionDescription does not already exist """
+                this_sstat=summaryStatistics(selectionDescription=selectionDescription, mean_maf=mean_maf, mean_mlp=mean_mlp, mean_depth=mean_depth, nBases=int(nBases))
                 try:
                         self.session.add(this_sstat)
                         self.session.commit()
@@ -82,10 +81,13 @@ class summaryStore():
                         return(None)
                 else:
                         retVal=res.__dict__
+
                         # remove SQL alchemy specific key value pairs
-                        for key in retVal.keys():
+                        starting_keys=list(retVal.keys())
+                        for key in starting_keys:
                                 if not key in ['selectionDescription','mean_depth','nBases','mean_maf','mean_mlp']:
                                         del retVal[key]
+
                         return(retVal)
         def restart(self):
                 """ removes all entries from the database """
@@ -99,6 +101,7 @@ class summaryStatistics(db1):       # the guids
     mean_mlp=Column(Float, nullable=False)
     mean_depth=Column(Float, nullable=False)
     nBases=Column(Integer, nullable=False)
+    
 class test_summaryStore_init(unittest.TestCase):
     def runTest(self):
         persistenceDir=os.path.join('..','unitTest_tmp')
@@ -226,11 +229,15 @@ class multiMixtureReader():
                 """
                 
                 # make a summary store
-                dbname='sstat'
-                test_path="<<DEFAULT>>/%s.db" % dbname          # used for testing LsStore object
-                connstring="sqlite:///%s" % test_path
-                self.summaryStore=summaryStore(db=db1, engineName=connstring, persistenceDir=persistenceDir)
-
+                if this_summaryStore is None:
+                        dbname='sstat'
+                        test_path="<<DEFAULT>>/%s.db" % dbname          # used for testing LsStore object
+                        connstring="sqlite:///%s" % test_path
+                        self.summaryStore=summaryStore(db=db1, engineName=connstring, dbDir=persistenceDir)
+                else:
+                        self.summaryStore=this_summaryStore
+                        
+                        
                 self.mixtureReader={}
                 print("Instantiating.  Adding mixtureReaders to the multiMixtureReader")
                 for (i,sampleId) in enumerate(sampleIds):
@@ -248,7 +255,7 @@ class multiMixtureReader():
                         nMr+=1
                         df=self.mixtureReader[sampleId].df
                         df['sampleId']=sampleId
-                        
+                        #print(df)               # debug
                         if nMr==1:
                                 self.df=df
                         else:
@@ -309,7 +316,6 @@ class mixtureReader():
                         raise KeyError("Database corresponding to {0} does not exist at {1}".format(sampleId, dbfile))
                 
                 self.connString='sqlite:///{0}'.format(dbfile)
-                #print(self.connString)
                 self.persistenceDir=persistenceDir          
                 self.engine = create_engine(self.connString)    # connection string for a database
                 self.df=None
@@ -353,7 +359,7 @@ class mixtureReader():
                         selection=sorted(selection)
                 
                 parameters={'sequenceGuid':sequenceGuid, 'selection':selection, 'minDepth':minDepth,'minP':minP}
-                to_hash=json.dumps(parameters, sort_keys=True)
+                to_hash=json.dumps(parameters, sort_keys=True).encode(encoding='utf-8')
                 return(hashlib.md5(to_hash).hexdigest())        
         def summarise_selection(self, selection, selectionDescription=None):
                 """ summarises statistics on the bases in {selection}; returns a pandas dataframe.
@@ -377,8 +383,6 @@ class mixtureReader():
                      selDes=selectionDescription
                      
                 # now try to recover
-                #print(selDes)
-                #print("Trying to recover..")
                 res=self.summaryStore.recover(this_selectionDescription=selDes) 
                 if res is None:
                         # nothing is present
@@ -456,20 +460,20 @@ class mixtureReader():
                 sqlCmd=select([func.avg(self.vcfBases.c.maf).label('mean_maf'),\
                                func.avg(self.vcfBases.c.depth).label('mean_depth'),\
                                func.avg(self.vcfBases.c.mlp).label('mean_mlp'),\
-                               func.count(self.vcfBases.c.maf).label('nBases')\
+                               func.count(self.vcfBases.c.depth).label('nBases')\
                              ]).\
                                 where(self.vcfBases.c.pos.in_(selection))
                 #print(self.engine)
                 #print(sqlCmd)
                 self.df=pd.read_sql_query(sql=sqlCmd, con=self.engine)
-                #print(self.df)
+                #print(self.df)          # debug
         def summarise_byFilter_fromdb(self, minDepth, minP):
                 """ summarises the statistics on the bases which pass selection by minDepth and minP;
                 results are stored in self.df"""
                 sqlCmd=sqlCmd=select([func.avg(self.vcfBases.c.maf).label('mean_maf'),\
                                func.avg(self.vcfBases.c.depth).label('mean_depth'),\
                                func.avg(self.vcfBases.c.mlp).label('mean_mlp'),\
-                               func.count(self.vcfBases.c.maf).label('nBases')\
+                               func.count(self.vcfBases.c.depth).label('nBases')\
                              ]).\
                                 where(self.vcfBases.c.depth>=minDepth).where(self.vcfBases.c.mlp>=minP)
                 #print(self.engine)
