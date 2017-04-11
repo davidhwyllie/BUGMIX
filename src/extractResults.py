@@ -19,7 +19,6 @@ import pandas as pd
 
 from parseVcf import multiMixtureReader, summaryStore, db1
 
-
 # use a list of samples which are provided in a flat file.
 # they are TB samples from either B'ham or Brighton.
 
@@ -45,16 +44,35 @@ collsites=list(map(int,coll['position']))
 basedir='/home/dwyllie/data/TBMIX'
 targetDir=os.path.join(basedir,'db')
 outputDir="/home/dwyllie/data/TBMIX/output"
-dbname='sstat'
-test_path="<<DEFAULT>>/%s.db" % dbname          # used for testing LsStore object
+
+# uses postgres; assumes database tbmix exists with
+# role tbmix;
+# need to
+# GRANT ALL PRIVILEGES ON DATABASE tbmix to tbmix;
+# GRANT ALL PRIVILEGES ON DATABASE tbmix TO GROUP tbmix_daemon;   # tbmix_daemon is the owner; tbmix is a login role & is a member of tbmix_daemon.
+
+dbname='tbmix'
+
+test_path="<<DEFAULT>>/%s.db" % dbname         
 test_connstring="sqlite:///%s" % test_path
+test_connstring="postgresql+psycopg2://tbmix:tbmix@localhost:5432/{0}".format(dbname)
 print(test_connstring)
 
 sstat=summaryStore(db=db1, engineName=test_connstring, dbDir=targetDir)
 
-
+# compute per-gene information on all samples
 sampleIds2=sampleIds
 mmr1=multiMixtureReader(sampleIds=sampleIds2, persistenceDir=targetDir, this_summaryStore=sstat)     #, this_summaryStore=sstat
+nChecked=0
+for this_sampleId in sampleIds:
+	nChecked+=1
+	print("{0} {1} {2}".format(datetime.datetime.now(), nChecked, this_sampleId))
+	mmr1.report_by_gene(guid=this_sampleId)
+exit()
+
+
+
+
 
 mmr1.summarise_byFilter(minDepth=50, minP=-1)
 print(mmr1.df)

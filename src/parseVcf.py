@@ -121,17 +121,17 @@ class summaryStore():
                                                                 gene=df.loc[ix,'gene'],
                                                                 base_selector=this_base_selector,   
                                                                 guid=this_sampleId,    
-                                                                mean_depth=df.loc[ix,'mean_depth'],
-                                                                min_depth=df.loc[ix,'min_depth'],
-                                                                max_depth=df.loc[ix, 'max_depth'],
-                                                                start=df.loc[ix, 'start'],   
-                                                                stop=df.loc[ix, 'stop'],   
-                                                                length=df.loc[ix, 'length'],
-                                                                mean_mlp=df.loc[ix, 'mean_mlp'],
+                                                                mean_depth=int(df.loc[ix,'mean_depth']),
+                                                                min_depth=int(df.loc[ix,'min_depth']),
+                                                                max_depth=int(df.loc[ix, 'max_depth']),
+                                                                start=int(df.loc[ix, 'start']),   
+                                                                stop=int(df.loc[ix, 'stop']),   
+                                                                length=int(df.loc[ix, 'length']),
+                                                                mean_mlp=float(df.loc[ix, 'mean_mlp']),
                                                                 mean_maf=df.loc[ix, 'mean_maf']
                                                 )
                                                 self.session.add(gss)
-                                self.session.commit()
+                                        self.session.commit()
 
                         else:
                                 print("Records are already present; not stored")
@@ -344,10 +344,16 @@ class multiMixtureReader():
                 r6= df.groupby(['gene'])['pos'].count().to_frame(name='length')
                 
                 r7= df.groupby(['gene'])['mlp'].mean().to_frame(name='mean_mlp')
-                r8= df.groupby(['gene'])['maf'].mean().to_frame(name='mean_maf')     
-
-                df=pd.concat([r0,r1,r2,r3,r4,r5,r6,r7,r8], axis=1)              # in R,  this is a cbind operation
                 
+                # if all mafs are NA, then mean() will fail with a pandas.core.base.DataError
+                try:                
+                        r8= df.groupby(['gene'])['maf'].mean().to_frame(name='mean_maf')     
+                except pd.core.base.DataError:
+                        r8=r1.copy()
+                        r8.columns=['mean_maf']
+                        r8['mean_maf']=None
+                df=pd.concat([r0,r1,r2,r3,r4,r5,r6,r7,r8], axis=1)              # in R,  this is a cbind operation
+                             
                 self.summaryStore.store_genes(df)
                 # *****
         def compare_base_frequencies(self,guid1, guid2, selection):
@@ -1262,7 +1268,52 @@ class test_multiMixtureReader_4(unittest.TestCase):
         # should only enter once
         mmr.report_by_gene(guid='0a8b57c1-4082-4d4b-8d40-0def0e168b3c')        
         # add another
+
+class test_multiMixtureReader_4(unittest.TestCase):
+    def runTest(self):
+        """ assesses gene-by-gene summaries  """
+        targetdir=os.path.join('..','testdata')
+        for filename in glob.glob(os.path.join(targetdir, 'sstat.db')):         # this is the target database used by default
+            os.unlink(filename) 
+        mmr=multiMixtureReader(sampleIds=['0a08c243-0d5d-4757-9e3f-0a0964c276b2','0a8b57c1-4082-4d4b-8d40-0def0e168b3c'],persistenceDir=targetdir)
+        mmr.report_by_gene(guid='0a08c243-0d5d-4757-9e3f-0a0964c276b2')
+        mmr.report_by_gene(guid='0a08c243-0d5d-4757-9e3f-0a0964c276b2')
+        # should only enter once
+        mmr.report_by_gene(guid='0a8b57c1-4082-4d4b-8d40-0def0e168b3c')        
         
+class test_multiMixtureReader_5(unittest.TestCase):
+    def runTest(self):
+        """ assesses gene-by-gene summaries  """
+        targetdir=os.path.join('..','testdata')
+        for filename in glob.glob(os.path.join(targetdir, 'sstat.db')):         # this is the target database used by default
+            os.unlink(filename) 
+        mmr=multiMixtureReader(sampleIds=['0a08c243-0d5d-4757-9e3f-0a0964c276b2','0a8b57c1-4082-4d4b-8d40-0def0e168b3c'],persistenceDir=targetdir)
+        mmr.report_by_gene(guid='0a08c243-0d5d-4757-9e3f-0a0964c276b2')
+        mmr.report_by_gene(guid='0a08c243-0d5d-4757-9e3f-0a0964c276b2')
+        # should only enter once
+        mmr.report_by_gene(guid='0a8b57c1-4082-4d4b-8d40-0def0e168b3c')        
+        
+        
+class test_multiMixtureReader_6(unittest.TestCase):
+    def runTest(self):
+        """ assesses gene-by-gene summaries.  This test case failed initially due to low quality data """
+        # create a test summaryStore object;
+        targetdir=os.path.join('..','testdata') 
+        
+        # delete the db if it exists
+        if os.path.exists(os.path.join(targetdir, 'sstat.db')):
+                os.unlink(os.path.join(targetdir, 'sstat.db'))
+                
+        dbname='sstat'
+        test_path="<<DEFAULT>>/%s.db" % dbname          # used for testing LsStore object
+        test_connstring="sqlite:///%s" % test_path
+        this_sampleId='0e76ed5c-8a31-4e8c-8d87-54571873c4ca'
+        sstat=summaryStore(db=db1, engineName=test_connstring, dbDir=targetdir)
+        mmr=multiMixtureReader(sampleIds=[this_sampleId],
+                               persistenceDir=targetdir,
+                               this_summaryStore=sstat)
+        mmr.report_by_gene(guid=this_sampleId)
+       
 class test_mixtureReader_generateSelectionDescription_1(unittest.TestCase):
     def runTest(self):
         """ tests the generation of a SelectionDescription using a hash of the values passed to it """
