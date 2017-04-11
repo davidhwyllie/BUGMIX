@@ -13,26 +13,40 @@ import pysam
 import json
 import hashlib
 from scipy import stats
+from FisherExact import fisher_exact
 import numpy  as np
 import time
 from csv import DictWriter
 import math
 import unittest
 import logging
+import warnings
 import pandas as pd
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Table, Column, Integer, String, Float, DateTime, Boolean, MetaData, select, func, LargeBinary, Index
 from sqlalchemy import create_engine, select, func
 from sqlalchemy import exc  # exceptions
 from sqlalchemy.orm import sessionmaker
+from scipy.stats import chi2_contingency
 
 
 ### beginning of vcfSQL definitions
 ## define classes
 db1=declarative_base() # classes mapping to persistent database inherit from this
-
+class compare_two_bases():
+        """ a class for comparing two base frequencies using a Chi-squared test """
+        def compare(self, dict1, dict2):
+                """ compares the frequencies of bases 'A','C','G','T' in each dictionary using a
+                Fisher exact test, with code ported from R to Python
+                https://github.com/maclandrol/FisherExact/blob/master/README.md
+                """
+                a1=[dict1['base_a'],dict1['base_c'],dict1['base_t'],dict1['base_g']]
+                a2=[dict2['base_a'],dict2['base_c'],dict2['base_t'],dict2['base_g']]
+                p=fisher_exact(table=[a1,a2], hybrid=True)
+                return(p)
 class summaryStore():
-        """ a class for storing the minor allele frequencies and other statistics from single or groups of samples. """        
+        """ a class for storing the minor allele frequencies and other statistics from single or groups of samples,
+        or genes within them. """        
         def __init__(self, db, engineName, dbDir):
             """ constructor
             
@@ -64,7 +78,8 @@ class summaryStore():
             self.engine = create_engine(engineName)     # connection string for a database
             self.Base.metadata.create_all(self.engine)  # create the table(s) if they do not exist
             Session = sessionmaker(bind=self.engine)    # class
-            self.session=Session()           
+            self.session=Session()
+            
         def store(self, selectionDescription, mean_maf, mean_mlp, nBases, mean_depth=None ):
                 """ stores the selection, provided that selectionDescription does not already exist """
                 this_sstat=summaryStatistics(selectionDescription=selectionDescription, mean_maf=mean_maf, mean_mlp=mean_mlp, mean_depth=mean_depth, nBases=int(nBases))
@@ -89,6 +104,63 @@ class summaryStore():
                                         del retVal[key]
 
                         return(retVal)
+        def store_genes(self, df):
+                """ stores the dataframe df  """
+                
+                required_fields=set(['gene','sampleId','base_selector','mean_depth','min_depth','max_depth','start','stop','length','mean_mlp','mean_maf'])
+                if set(df.columns)==required_fields:
+                        this_base_selector=min(df.loc[:,'base_selector'].values)
+                        this_sampleId=     min(df.loc[:,'sampleId'].values)
+                        print("Storing data for {0} ({1})".format(this_sampleId, this_base_selector))
+                        nExisting,=self.session.query(func.count(geneSummaryStatistics.gstatId)).filter(geneSummaryStatistics.guid==this_sampleId).\
+                                               filter(geneSummaryStatistics.base_selector==this_base_selector).one()
+                        if nExisting==0:
+                                for ix in df.index:
+                                        if df.loc[ix,'length']>0:
+                                                gss=geneSummaryStatistics(
+                                                                gene=df.loc[ix,'gene'],
+                                                                base_selector=this_base_selector,   
+                                                                guid=this_sampleId,    
+                                                                mean_depth=df.loc[ix,'mean_depth'],
+                                                                min_depth=df.loc[ix,'min_depth'],
+                                                                max_depth=df.loc[ix, 'max_depth'],
+                                                                start=df.loc[ix, 'start'],   
+                                                                stop=df.loc[ix, 'stop'],   
+                                                                length=df.loc[ix, 'length'],
+                                                                mean_mlp=df.loc[ix, 'mean_mlp'],
+                                                                mean_maf=df.loc[ix, 'mean_maf']
+                                                )
+                                                self.session.add(gss)
+                                self.session.commit()
+
+                        else:
+                                print("Records are already present; not stored")
+                        
+                else:        
+                        raise TypeError("Data frame must contain the following fields {0} but it looks like this:\n{1}".format(required_fields, df))
+            
+                return(0)       
+        def recover_genes(self, this_base_selector, this_sampleId):
+                """ recovers the stored values """
+                q=self.session.query(
+                        geneSummaryStatistics.gene,\
+                        geneSummaryStatistics.base_selector,
+                        geneSummaryStatistics.guid,\
+                        geneSummaryStatistics.mean_depth,\
+                        geneSummaryStatistics.min_depth,\
+                        geneSummaryStatistics.max_depth,\
+                        geneSummaryStatistics.start,\
+                        geneSummaryStatistics.stop,\
+                        geneSummaryStatistics.length,\
+                        geneSummaryStatistics.mean_mlp,\
+                        geneSummaryStatistics.mean_maf).\
+                        filter(geneSummaryStatistics.guid==this_sampleId).\
+                        filter(geneSummaryStatistics.base_selector==this_base_selector)
+                df=pd.read_sql(sql=q.statement, con=self.engine)
+                if len(df.index)==0:
+                        return  None
+                else:
+                        return (df)
         def restart(self):
                 """ removes all entries from the database """
                 self.session.query(summaryStatistics).delete()           
@@ -101,48 +173,24 @@ class summaryStatistics(db1):       # the guids
     mean_mlp=Column(Float, nullable=False)
     mean_depth=Column(Float, nullable=False)
     nBases=Column(Integer, nullable=False)
-    
-class test_summaryStore_init(unittest.TestCase):
-    def runTest(self):
-        persistenceDir=os.path.join('..','unitTest_tmp')
-        dbname='sstat'
-        test_path="<<DEFAULT>>/%s.db" % dbname          # used for testing LsStore object
-        test_connstring="sqlite:///%s" % test_path
- 
-        # delete the contents of unitTest_tmp
-        for this_file in glob.glob(os.path.join(persistenceDir, '*.*')):
-                os.unlink(this_file)
-        sstat=summaryStore(db=db1, engineName=test_connstring, persistenceDir=persistenceDir)
-
-        if not os.path.exists(os.path.join(persistenceDir, 'sstat.db')):
-                self.fail("sstat.db was not created")
-class test_summaryStore_add(unittest.TestCase):
-    def runTest(self):
-        persistenceDir=os.path.join('..','unitTest_tmp')
-        dbname='sstat'
-        test_path="<<DEFAULT>>/%s.db" % dbname          # used for testing LsStore object
-        test_connstring="sqlite:///%s" % test_path
- 
-        # delete the contents of unitTest_tmp
-        for this_file in glob.glob(os.path.join(persistenceDir, '*.*')):
-                os.unlink(this_file)
-        sstat=summaryStore(db=db1, engineName=test_connstring, persistenceDir=persistenceDir)
-        sstat.restart()         # remove any old records
-        if not os.path.exists(os.path.join(persistenceDir, 'sstat.db')):
-                self.fail("sstat.db was not created")
-
-        sstat.store(selectionDescription='a', mean_mlp=2, mean_maf=0.5, mean_depth=100, nBases=100)
-        res=sstat.recover(this_selectionDescription='a')
-        self.assertEqual(res['mean_maf'],0.5)
-        res=sstat.recover(this_selectionDescription='b')
-        self.assertTrue(res is None)
-        
-        sstat.restart()
-        res=sstat.recover(this_selectionDescription='a')        
-        self.assertTrue(res is None)        
+class geneSummaryStatistics(db1):       # the guids
+    """ SQLalchemy class definition for a table including stored summary values """
+    __tablename__ = 'perGeneStatistics'
+    gstatId=Column(Integer, primary_key=True)
+    gene=Column(String(50), index=True)
+    base_selector=Column(String(12), index=True)   
+    guid=Column(String(36), index=True)    
+    mean_depth=Column(Float, nullable=False)
+    min_depth=Column(Float, nullable=False)    
+    max_depth=Column(Float, nullable=False)
+    start=Column(Integer, nullable=False)    
+    stop=Column(Integer, nullable=False)    
+    length=Column(Integer, nullable=False)
+    mean_mlp=Column(Float, nullable=True)
+    mean_maf=Column(Float, nullable=True)  
 class multiMixtureReader():
         """ a class reading the results of mixture computations from multiple TB sequences, as generated by vcfSQL """
-        def __init__(self, sampleIds, persistenceDir, this_summaryStore=None):
+        def __init__(self, sampleIds, persistenceDir, this_summaryStore=None, base2geneLookup=os.path.join('..','refdata','refgenome_lookup.txt')):
                 """ creates multiple mixtureReader objects, each corresponding to one item in sampleIds.
                     if a summaryStore object is passed, will attempt to use this to obtain stored results, rather than
                     computation from database files.  This speeds operations on hundred or thousands of files.
@@ -227,11 +275,19 @@ class multiMixtureReader():
                                 dfSubset2.to_csv(os.path.join(outputDir, 'type2.csv'))
 
                 """
+                # instantiate base frequency comparer object
+                self.ctb=compare_two_bases()
                 
+                # load base2gene lookup table, if available
+                if base2geneLookup is not None:
+                        self.base2gene=pd.read_table(base2geneLookup, engine='c', sep='\t',  compression=None, index_col=0)
+                else:
+                        self.base2gene=None
+                        
                 # make a summary store
-                if this_summaryStore is None:
+                if this_summaryStore is None:           # use a database called 'sstat' in the data directory.
                         dbname='sstat'
-                        test_path="<<DEFAULT>>/%s.db" % dbname          # used for testing LsStore object
+                        test_path="<<DEFAULT>>/%s.db" % dbname          
                         connstring="sqlite:///%s" % test_path
                         self.summaryStore=summaryStore(db=db1, engineName=connstring, dbDir=persistenceDir)
                 else:
@@ -243,9 +299,110 @@ class multiMixtureReader():
                 for (i,sampleId) in enumerate(sampleIds):
                         if (i % 100) == 0:
                                 print("{0} / {1}".format(i,len(sampleIds)))
-                        self.mixtureReader[sampleId]=mixtureReader(sampleId, persistenceDir, self.summaryStore)
+                        try:
+                                self.mixtureReader[sampleId]=mixtureReader(sampleId, persistenceDir, self.summaryStore)
+                        except KeyError as e:
+                                warnings.warn("no guid {0}".format(sampleId))
                 self.df=None
+        
+
+
+        def report_by_gene(self,guid):
+                """ produces a per gene report on mixtures """
+                if self.base2gene is None:
+                        warnings.warn("No report generated as no base2gene lookup file.")
+                        return None     # we have no base2gene lookup table with which to compute per-gene information
                 
+                if not guid in self.mixtureReader.keys():
+                        raise KeyError("{0} has not been loaded.  Instantiate the multiMixtureReader with the necessary guids needed.".format(guid))
+
+                # check whether we have already computed this.
+                df=self.summaryStore.recover_genes(this_base_selector='all', this_sampleId=guid)
+                if df is not None:
+                        return(df)
+
+                # otherwise, we comput the result.
+                self.mixtureReader[guid].read_all()
+                if not len(self.mixtureReader[guid].df.index)==len(self.base2gene.index):
+                        raise KeyError("The base2gene lookup has length {0} but the data set loaded has length {1}".format(len(self.mixtureReader[guid].index),len(self.based2gene.index)))
+                
+                df=pd.concat([self.base2gene.reset_index(drop=True),self.mixtureReader[guid].df], axis=1)              # in R,  this is a cbind operation
+                self.mixtureReader[guid].df=None                                                                       # release memory
+ 
+                # the process of producing these statistics is now ultrafast 
+                # can readily produce comprehensive per-gene metrics
+                r0= df.groupby(['gene'])['gene'].min().to_frame(name='gene')
+                r0['sampleId']=guid
+                r0['base_selector']='all'
+                
+                r1= df.groupby(['gene'])['depth'].mean().to_frame(name='mean_depth')
+                r2= df.groupby(['gene'])['depth'].min().to_frame(name='min_depth')
+                r3= df.groupby(['gene'])['depth'].max().to_frame(name='max_depth')
+               
+                r4= df.groupby(['gene'])['pos'].min().to_frame(name='start')                
+                r5= df.groupby(['gene'])['pos'].max().to_frame(name='stop')                
+                r6= df.groupby(['gene'])['pos'].count().to_frame(name='length')
+                
+                r7= df.groupby(['gene'])['mlp'].mean().to_frame(name='mean_mlp')
+                r8= df.groupby(['gene'])['maf'].mean().to_frame(name='mean_maf')     
+
+                df=pd.concat([r0,r1,r2,r3,r4,r5,r6,r7,r8], axis=1)              # in R,  this is a cbind operation
+                
+                self.summaryStore.store_genes(df)
+                # *****
+        def compare_base_frequencies(self,guid1, guid2, selection):
+                """ compares guid1 and guid2's base frequencies  at the positions in the set 'selection'
+                using a fisher exact test.
+                Returns a vector of log10(p) values """
+                if not guid1 in self.mixtureReader.keys():
+                        raise KeyError("{0} has not been loaded.  Instantiate the multiMixtureReader with all guids needed.".format(guid1))
+                if not guid2 in self.mixtureReader.keys():
+                        raise KeyError("{0} has not been loaded.  Instantiate the multiMixtureReader with all guids needed.".format(guid2))
+                if not type(selection) in (set, list):
+                        raise TypeError("bases must be either a set of a list, but it is a {0}".format(type(bases)))
+                
+                # read the frequencies into data frames
+                self.mixtureReader[guid1].read_selection(selection)
+                self.mixtureReader[guid2].read_selection(selection)
+                
+                pvalues=[]
+                mafs=[]
+                for i in self.mixtureReader[guid1].df.index:
+                        d1=self.mixtureReader[guid1].df.loc[i,].to_dict()
+                        d2=self.mixtureReader[guid2].df.loc[i,].to_dict()
+                        #print("Comparing pair")
+                        #print(d1['base_a'],d1['base_c'],d1['base_g'],d1['base_t'])
+                        #print(d2['base_a'],d2['base_c'],d2['base_g'],d2['base_t'])
+
+                        p=self.ctb.compare(d1,d2)
+                        #print(p)
+                        pvalues.append(p)
+                        
+                        # also store the maximal maf of the pair
+                        mafs.append(max(d1['maf'],d2['maf']))
+    
+                # derive summary statistics
+              
+                def compute_mlp(x):
+                        """ computes -log10(x).  Returns 50 if x<1e-50"""
+                        if x<1e-50:
+                                return(50)
+                        elif x==1:
+                                return(0)
+                        else:
+                                return(-1*math.log10(x))
+                        
+                retVal={'mafs':mafs,'maf_avg':np.mean(mafs),'maf_median':np.median(mafs)}
+                retVal['mlp']=list(map(compute_mlp, pvalues))
+                retVal['mlp_sum']=sum(retVal['mlp'])
+                retVal['mlp_avg']=np.mean(retVal['mlp'])
+                retVal['mlp_median']=np.median(retVal['mlp'])
+                
+                # which exceed bonferroni adjustment
+                p_cutoff=0.01/len(retVal['mlp'])
+                retVal['n_over_cutoff']=sum(1 for x in pvalues if x < p_cutoff)
+                
+                return(retVal)
                 
         def _aggregate(self):
                 """ examines the data frames produced by all mixtureReaders attached, and sets a data frame self.df
@@ -263,6 +420,9 @@ class multiMixtureReader():
                                 
         def read_selection(self, selection):
                 """ performs read_selection (see mixtureReader) for all sampleIds """
+                
+                # the selection must be integers, not numpy.int64 etc.
+                selection=list( map( int, selection ))
                 for (i,sampleId) in enumerate(self.mixtureReader.keys()):
                         if i % 100 ==0:
                                 print(i)
@@ -357,6 +517,9 @@ class mixtureReader():
                         raise TypeError("Selection must be either a set or a list, but it is a {0}".format(type(selection)))
                 else:
                         selection=sorted(selection)
+                        
+                # positions as integers, or they won't json convert;
+                selection=list(map(int, selection))
                 
                 parameters={'sequenceGuid':sequenceGuid, 'selection':selection, 'minDepth':minDepth,'minP':minP}
                 to_hash=json.dumps(parameters, sort_keys=True).encode(encoding='utf-8')
@@ -479,7 +642,6 @@ class mixtureReader():
                 #print(self.engine)
                 #print(sqlCmd)
                 self.df=pd.read_sql_query(sql=sqlCmd, con=self.engine)
-                #print(self.df)
 class vcfSQL():
         """ manages a database backend (default: sqlite) for use for VCF storage.  
         You would not normally use this class directly.  Use vcfStore instead, which is a wrapper around vcfSQL.
@@ -610,6 +772,7 @@ class vcfStore():
             
             # iterate over the vcf file
             for line in f:
+                line=line.decode()
                 if line[0] == "#":
                     continue  # it is a comment; go to next line;
                 if "INDEL" in line:
@@ -620,8 +783,8 @@ class vcfStore():
                 pos = int(pos)
                 alts = alts.split(",")
                 infos = dict(item.split("=") for item in infos.split(";"))
-                baseCounts4=map(int, infos['BaseCounts4'].split(","))   #get frequencies of high quality bases
-                baseFreqs=map(int, infos['BaseCounts4'].split(","))     #get frequencies of high quality bases
+                baseCounts4=list(map(int, infos['BaseCounts4'].split(",")))   #get frequencies of high quality bases
+                baseFreqs=list(map(int, infos['BaseCounts4'].split(",")))     #get frequencies of high quality bases
                 baseFreqs.sort(reverse=True)                            #get frequencies of high quality bases, sorted
                 depth = sum(baseCounts4)
      
@@ -721,6 +884,51 @@ class vcfStore():
         self.timings['finished']=time.strftime("%c")       # monitor time taken
 
 ################### unit tests ###################
+class test_summaryStore_init(unittest.TestCase):
+    def runTest(self):
+        persistenceDir=os.path.join('..','unitTest_tmp')
+        dbname='sstat'
+        test_path="<<DEFAULT>>/%s.db" % dbname          # used for testing LsStore object
+        test_connstring="sqlite:///%s" % test_path
+ 
+        # delete the contents of unitTest_tmp
+        for this_file in glob.glob(os.path.join(persistenceDir, '*.*')):
+                os.unlink(this_file)
+        sstat=summaryStore(db=db1, engineName=test_connstring, persistenceDir=persistenceDir)
+
+        if not os.path.exists(os.path.join(persistenceDir, 'sstat.db')):
+                self.fail("sstat.db was not created")
+class test_summaryStore_add(unittest.TestCase):
+    def runTest(self):
+        persistenceDir=os.path.join('..','unitTest_tmp')
+        dbname='sstat'
+        test_path="<<DEFAULT>>/%s.db" % dbname          # used for testing LsStore object
+        test_connstring="sqlite:///%s" % test_path
+ 
+        # delete the contents of unitTest_tmp
+        for this_file in glob.glob(os.path.join(persistenceDir, '*.*')):
+                os.unlink(this_file)
+        sstat=summaryStore(db=db1, engineName=test_connstring, persistenceDir=persistenceDir)
+        sstat.restart()         # remove any old records
+        if not os.path.exists(os.path.join(persistenceDir, 'sstat.db')):
+                self.fail("sstat.db was not created")
+
+        sstat.store(selectionDescription='a', mean_mlp=2, mean_maf=0.5, mean_depth=100, nBases=100)
+        res=sstat.recover(this_selectionDescription='a')
+        self.assertEqual(res['mean_maf'],0.5)
+        res=sstat.recover(this_selectionDescription='b')
+        self.assertTrue(res is None)
+        
+        sstat.restart()
+        res=sstat.recover(this_selectionDescription='a')        
+        self.assertTrue(res is None)        
+
+class test_ctb_1(unittest.TestCase):
+    def runTest(self):
+        """ tests the compare two bases function """
+        ctb=compare_two_bases()
+        p=ctb.compare({'base_a':10,'base_c':0,'base_t':190,'base_g':0},{'base_a':10,'base_c':0,'base_t':190,'base_g':0})
+        self.assertTrue(p==1)        
      
 class test_vcfparser_init0a(unittest.TestCase):
     def runTest(self):
@@ -1015,6 +1223,46 @@ class test_multiMixtureReader_1(unittest.TestCase):
         mmr.read_selection([1,2,3,4,5])
         self.assertEqual(len(mmr.df.index),10)
 
+class test_multiMixtureReader_2(unittest.TestCase):
+    def runTest(self):
+        """ assesses pairwise comparison using Fisher exact test """
+        targetdir=os.path.join('..','unitTest_tmp')
+        for filename in glob.glob(os.path.join(targetdir, '*.db')):
+            os.unlink(filename)    
+        inputfile=os.path.join("..",'testdata','52858be2-7020-4b7f-acb4-95e00019a7d7_v3.vcf.gz')
+        vp1=vcfStore(persistenceDir=targetdir, maxLines=200)
+        vp1.store(vcffile=inputfile, sampleId='guid1')
+        inputfile=os.path.join("..",'testdata','006578d3-e834-4b4e-9bdd-620cc1f274ed_v3.vcf.gz')
+        vp2=vcfStore(persistenceDir=targetdir, maxLines=200)
+        vp2.store(vcffile=inputfile, sampleId='guid2')           
+        mmr=multiMixtureReader(sampleIds=['guid1','guid2'],persistenceDir=targetdir)
+        s=set(range(100))
+
+        res=mmr.compare_base_frequencies(guid1='guid1',guid2='guid2', selection=s)
+
+class test_multiMixtureReader_3(unittest.TestCase):
+    def runTest(self):
+        """ assesses gene-by-gene summaries  """
+        targetdir=os.path.join('..','testdata')
+        for filename in glob.glob(os.path.join(targetdir, 'sstat.db')):         # this is the target database used by default
+            os.unlink(filename)
+            
+        mmr=multiMixtureReader(sampleIds=['0a08c243-0d5d-4757-9e3f-0a0964c276b2'],persistenceDir=targetdir)
+        mmr.report_by_gene(guid='0a08c243-0d5d-4757-9e3f-0a0964c276b2')
+
+class test_multiMixtureReader_4(unittest.TestCase):
+    def runTest(self):
+        """ assesses gene-by-gene summaries  """
+        targetdir=os.path.join('..','testdata')
+        for filename in glob.glob(os.path.join(targetdir, 'sstat.db')):         # this is the target database used by default
+            os.unlink(filename) 
+        mmr=multiMixtureReader(sampleIds=['0a08c243-0d5d-4757-9e3f-0a0964c276b2','0a8b57c1-4082-4d4b-8d40-0def0e168b3c'],persistenceDir=targetdir)
+        mmr.report_by_gene(guid='0a08c243-0d5d-4757-9e3f-0a0964c276b2')
+        mmr.report_by_gene(guid='0a08c243-0d5d-4757-9e3f-0a0964c276b2')
+        # should only enter once
+        mmr.report_by_gene(guid='0a8b57c1-4082-4d4b-8d40-0def0e168b3c')        
+        # add another
+        
 class test_mixtureReader_generateSelectionDescription_1(unittest.TestCase):
     def runTest(self):
         """ tests the generation of a SelectionDescription using a hash of the values passed to it """

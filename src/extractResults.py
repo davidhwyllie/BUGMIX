@@ -19,6 +19,7 @@ import pandas as pd
 
 from parseVcf import multiMixtureReader, summaryStore, db1
 
+
 # use a list of samples which are provided in a flat file.
 # they are TB samples from either B'ham or Brighton.
 
@@ -37,7 +38,8 @@ print("Reading guids, n= {0}".format(nGuids))
 print("Loading deep branch information")
 tbd_file="/home/dwyllie/dev/TBMIX/refdata/TBDeepBranch.txt"
 coll=pd.read_table(tbd_file)
-collsites=coll['position']
+collsites=list(map(int,coll['position']))
+
 
 # create a summaryStore object;
 basedir='/home/dwyllie/data/TBMIX'
@@ -50,25 +52,39 @@ print(test_connstring)
 
 sstat=summaryStore(db=db1, engineName=test_connstring, dbDir=targetDir)
 
-# compute summaries of all the files using a filter and for a selection;
-sampleIds2=sampleIds[1:50]
+
+sampleIds2=sampleIds
 mmr1=multiMixtureReader(sampleIds=sampleIds2, persistenceDir=targetDir, this_summaryStore=sstat)     #, this_summaryStore=sstat
-mmr1.summarise_byFilter(minDepth=50, minP=8)
+
+mmr1.summarise_byFilter(minDepth=50, minP=-1)
 print(mmr1.df)
 print("Summary complete")
-exit()
+mmr1.df.to_csv(os.path.join(outputDir, 'depthOver50.csv'))
+
+
 mmr1.summarise_selection(collsites)
 print("Summary complete")
 print(mmr1.df)
+mmr1.df.to_csv(os.path.join(outputDir, 'collsites.csv'))
+
+
+mmr1.summarise_byFilter(minDepth=50, minP=8)
+print(mmr1.df)
+print("Summary complete")
+mmr1.df.to_csv(os.path.join(outputDir, 'highVariation.csv'))
+
+# compute summaries of all the files using a filter and for a selection;
+mmr1.read_selection(collsites)
+print(mmr1.df)
+maf=mmr1.df[['sampleId','pos','maf','mlp']]
+coll_subset=coll[['lineage','position']]
+cs=coll_subset.merge(maf, how='left', left_on='position', right_on='pos')
+cs.to_csv(os.path.join(outputDir, 'collsites_individually.csv'))
+
 exit()
 
 
-mmr.read_selection(collsites)
-print(mmr.df)
-maf=mmr.df[['sampleId','pos','maf','mlp']]
-coll_subset=coll[['lineage','position']]
-cs=coll_subset.merge(maf, how='left', left_on='position', right_on='pos')
-print(cs)
+
 
 # cross tabulate
 cs_wide1=pd.crosstab(index=cs['sampleId'], columns=cs['lineage'], values=cs['mlp'], aggfunc=sum)
@@ -76,9 +92,9 @@ cs_wide1['Sample ID Guuid']=cs_wide1.index
 cs_wide2=pd.crosstab(index=cs['sampleId'], columns=cs['lineage'], values=cs['maf'], aggfunc=sum)
 cs_wide2['Sample ID Guuid']=cs_wide2.index
 
-dfSubset=df[['Location','Acc Number','Collection Date','Samplename','Sample ID Guuid','Platename','Totalreads']]
+dfSubset=mmr1.df[['Location','Acc Number','Collection Date','Samplename','Sample ID Guuid','Platename','Totalreads']]
 dfSubset1=dfSubset.merge(cs_wide1, on='Sample ID Guuid', how='left')
 dfSubset2=dfSubset.merge(cs_wide2, on='Sample ID Guuid', how='left')
 
-dfSubset1.to_csv(os.path.join(outputDir, 'type1.csv'))
+
 dfSubset2.to_csv(os.path.join(outputDir, 'type2.csv'))
