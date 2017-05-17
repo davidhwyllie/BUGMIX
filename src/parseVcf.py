@@ -22,6 +22,7 @@ import unittest
 import logging
 import warnings
 import pandas as pd
+import copy
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Table, Column, Integer, String, Float, DateTime, Boolean, MetaData, select, func, LargeBinary, Index
 from sqlalchemy import create_engine, select, func
@@ -100,7 +101,7 @@ class summaryStore():
                         # remove SQL alchemy specific key value pairs
                         starting_keys=list(retVal.keys())
                         for key in starting_keys:
-                                if not key in ['selectionDescription','mean_depth','nBases','mean_maf','mean_mlp']:
+                                if not key in ['guid', 'selectionDescription','mean_depth','nBases','mean_maf','mean_mlp']:
                                         del retVal[key]
 
                         return(retVal)
@@ -111,7 +112,8 @@ class summaryStore():
                 if set(df.columns)==required_fields:
                         this_base_selector=min(df.loc[:,'base_selector'].values)
                         this_sampleId=     min(df.loc[:,'sampleId'].values)
-                        print("Storing data for {0} ({1})".format(this_sampleId, this_base_selector))
+                        
+                        #print("Storing data for {0} ({1})".format(this_sampleId, this_base_selector))
                         nExisting,=self.session.query(func.count(geneSummaryStatistics.gstatId)).filter(geneSummaryStatistics.guid==this_sampleId).\
                                                filter(geneSummaryStatistics.base_selector==this_base_selector).one()
                         if nExisting==0:
@@ -134,8 +136,8 @@ class summaryStore():
                                         self.session.commit()
 
                         else:
-                                print("Records are already present; not stored")
-                        
+                                #print("Records are already present; not stored")
+                                pass
                 else:        
                         raise TypeError("Data frame must contain the following fields {0} but it looks like this:\n{1}".format(required_fields, df))
             
@@ -168,11 +170,11 @@ class summaryStatistics(db1):       # the guids
     """ SQLalchemy class definition for a table including stored summary values """
     __tablename__ = 'mixtureStatistics'
     sstatId=Column(Integer, primary_key=True)
-    selectionDescription=Column(String(32), index=True, unique=True)        
+    selectionDescription=Column(String(80), unique=True, index=True)        
     mean_maf=Column(Float, nullable=False)
     mean_mlp=Column(Float, nullable=False)
     mean_depth=Column(Float, nullable=False)
-    nBases=Column(Integer, nullable=False)
+    nBases=Column(Integer, nullable=False)   
 class geneSummaryStatistics(db1):       # the guids
     """ SQLalchemy class definition for a table including stored summary values """
     __tablename__ = 'perGeneStatistics'
@@ -293,19 +295,20 @@ class multiMixtureReader():
                 else:
                         self.summaryStore=this_summaryStore
                         
-                        
+                              
                 self.mixtureReader={}
                 print("Instantiating.  Adding mixtureReaders to the multiMixtureReader")
                 for (i,sampleId) in enumerate(sampleIds):
                         if (i % 100) == 0:
                                 print("{0} / {1}".format(i,len(sampleIds)))
                         try:
-                                self.mixtureReader[sampleId]=mixtureReader(sampleId, persistenceDir, self.summaryStore)
+
+                                single_mmr= mixtureReader(sampleId, persistenceDir, self.summaryStore)
+                                self.mixtureReader[sampleId]=copy.copy(single_mmr)
                         except KeyError as e:
                                 warnings.warn("no guid {0}".format(sampleId))
+                                
                 self.df=None
-        
-
 
         def report_by_gene(self,guid):
                 """ produces a per gene report on mixtures """
@@ -323,39 +326,42 @@ class multiMixtureReader():
 
                 # otherwise, we comput the result.
                 self.mixtureReader[guid].read_all()
-                if not len(self.mixtureReader[guid].df.index)==len(self.base2gene.index):
-                        raise KeyError("The base2gene lookup has length {0} but the data set loaded has length {1}".format(len(self.mixtureReader[guid].index),len(self.based2gene.index)))
-                
-                df=pd.concat([self.base2gene.reset_index(drop=True),self.mixtureReader[guid].df], axis=1)              # in R,  this is a cbind operation
-                self.mixtureReader[guid].df=None                                                                       # release memory
- 
-                # the process of producing these statistics is now ultrafast 
-                # can readily produce comprehensive per-gene metrics
-                r0= df.groupby(['gene'])['gene'].min().to_frame(name='gene')
-                r0['sampleId']=guid
-                r0['base_selector']='all'
-                
-                r1= df.groupby(['gene'])['depth'].mean().to_frame(name='mean_depth')
-                r2= df.groupby(['gene'])['depth'].min().to_frame(name='min_depth')
-                r3= df.groupby(['gene'])['depth'].max().to_frame(name='max_depth')
-               
-                r4= df.groupby(['gene'])['pos'].min().to_frame(name='start')                
-                r5= df.groupby(['gene'])['pos'].max().to_frame(name='stop')                
-                r6= df.groupby(['gene'])['pos'].count().to_frame(name='length')
-                
-                r7= df.groupby(['gene'])['mlp'].mean().to_frame(name='mean_mlp')
-                
-                # if all mafs are NA, then mean() will fail with a pandas.core.base.DataError
-                try:                
-                        r8= df.groupby(['gene'])['maf'].mean().to_frame(name='mean_maf')     
-                except pd.core.base.DataError:
-                        r8=r1.copy()
-                        r8.columns=['mean_maf']
-                        r8['mean_maf']=None
-                df=pd.concat([r0,r1,r2,r3,r4,r5,r6,r7,r8], axis=1)              # in R,  this is a cbind operation
-                             
-                self.summaryStore.store_genes(df)
-                # *****
+                l1 = len(self.mixtureReader[guid].df.index)
+                l2 = len(self.base2gene.index)
+                if not l1 == l2:
+                        warnings.warn("Skipping; likely corruption; The base2gene lookup has length {1} but the data set loaded has length {0}".format(l1,l2))
+                else:
+                        
+                        df=pd.concat([self.base2gene.reset_index(drop=True),self.mixtureReader[guid].df], axis=1)              # in R,  this is a cbind operation
+                        self.mixtureReader[guid].df=None                                                                       # release memory
+         
+                        # the process of producing these statistics is now ultrafast 
+                        # can readily produce comprehensive per-gene metrics
+                        r0= df.groupby(['gene'])['gene'].min().to_frame(name='gene')
+                        r0['sampleId']=guid
+                        r0['base_selector']='all'
+                        
+                        r1= df.groupby(['gene'])['depth'].mean().to_frame(name='mean_depth')
+                        r2= df.groupby(['gene'])['depth'].min().to_frame(name='min_depth')
+                        r3= df.groupby(['gene'])['depth'].max().to_frame(name='max_depth')
+                       
+                        r4= df.groupby(['gene'])['pos'].min().to_frame(name='start')                
+                        r5= df.groupby(['gene'])['pos'].max().to_frame(name='stop')                
+                        r6= df.groupby(['gene'])['pos'].count().to_frame(name='length')
+                        
+                        r7= df.groupby(['gene'])['mlp'].mean().to_frame(name='mean_mlp')
+                        
+                        # if all mafs are NA, then mean() will fail with a pandas.core.base.DataError
+                        try:                
+                                r8= df.groupby(['gene'])['maf'].mean().to_frame(name='mean_maf')     
+                        except pd.core.base.DataError:
+                                r8=r1.copy()
+                                r8.columns=['mean_maf']
+                                r8['mean_maf']=None
+                        df=pd.concat([r0,r1,r2,r3,r4,r5,r6,r7,r8], axis=1)              # in R,  this is a cbind operation
+                                     
+                        self.summaryStore.store_genes(df)
+                        # *****
         def compare_base_frequencies(self,guid1, guid2, selection):
                 """ compares guid1 and guid2's base frequencies  at the positions in the set 'selection'
                 using a fisher exact test.
@@ -376,12 +382,7 @@ class multiMixtureReader():
                 for i in self.mixtureReader[guid1].df.index:
                         d1=self.mixtureReader[guid1].df.loc[i,].to_dict()
                         d2=self.mixtureReader[guid2].df.loc[i,].to_dict()
-                        #print("Comparing pair")
-                        #print(d1['base_a'],d1['base_c'],d1['base_g'],d1['base_t'])
-                        #print(d2['base_a'],d2['base_c'],d2['base_g'],d2['base_t'])
-
                         p=self.ctb.compare(d1,d2)
-                        #print(p)
                         pvalues.append(p)
                         
                         # also store the maximal maf of the pair
@@ -430,8 +431,6 @@ class multiMixtureReader():
                 # the selection must be integers, not numpy.int64 etc.
                 selection=list( map( int, selection ))
                 for (i,sampleId) in enumerate(self.mixtureReader.keys()):
-                        if i % 100 ==0:
-                                print(i)
                         self.mixtureReader[sampleId].read_selection(selection)
                 self._aggregate()
                 
@@ -443,13 +442,18 @@ class multiMixtureReader():
                 If present, it should be unique to this search, because it will be used to search for cached result(s) to speed computation.
                 
                 results are put in self.df  """
-                print("Summarising")
+                
+                #print("Summarising")
                 for (i,sampleId) in enumerate(self.mixtureReader.keys()):
-                        if (i % 100) == 0:
+                        if (i % 100) == 0 & i>0:
                                 print("{0} / {1}".format(i,len(self.mixtureReader.keys())))
 
-                        self.mixtureReader[sampleId].summarise_selection(selection, selectionDescription=this_selectionDescription)
-                print("Aggregating ..")
+                        if this_selectionDescription is None:
+                                use_selectionDescription = None
+                        else:
+                           use_selectionDescription = "{0}|{1}".format(sampleId, this_selectionDescription)
+                        self.mixtureReader[sampleId].summarise_selection(selection, selectionDescription = use_selectionDescription)
+
                 self._aggregate()
                 
         def summarise_byFilter(self, minDepth, minP, this_selectionDescription=None):
@@ -459,12 +463,12 @@ class multiMixtureReader():
                 If present, it should be unique to this search, because it will be used to search for cached result(s) to speed computation.               
                 results are put in self.df
                 """
-                print("Summarising using a filter")
+                #print("Summarising using a filter")
                 for (i,sampleId) in enumerate(self.mixtureReader.keys()):
                         if (i % 100) == 0:
                                 print("{0} / {1}".format(i,len(self.mixtureReader.keys())))
                         self.mixtureReader[sampleId].summarise_byFilter(minDepth, minP, this_selectionDescription=this_selectionDescription)
-                print("Aggregating ..")
+                #print("Aggregating ..")
                 self._aggregate()                
 class mixtureReader():
         """ a class reading the results of mixture computations from one TB sequence, as generated by vcfSQL """
@@ -475,12 +479,13 @@ class mixtureReader():
                     If passed a summaryStore object, it will persist its results in the result store and attempt to used cached results from the
                     result store in preference to ab initio extraction from the database.
                     
+
                 """
                 self.sampleId=sampleId
                 dbfile='{0}/{1}.db'.format(persistenceDir,sampleId)
                 if not os.path.exists(dbfile):
                         raise KeyError("Database corresponding to {0} does not exist at {1}".format(sampleId, dbfile))
-                
+                        
                 self.connString='sqlite:///{0}'.format(dbfile)
                 self.persistenceDir=persistenceDir          
                 self.engine = create_engine(self.connString)    # connection string for a database
@@ -498,7 +503,10 @@ class mixtureReader():
                         Column('base_t',Integer),
                         Column('maf',Float, nullable=True),
                         Column('mlp',Float, nullable=True)
-                        )               
+                        )
+
+                self.df=None
+                               
         def read_all(self):
                 """ reads all records for this sampleId into memory as a pandas dataframe.  Note that this can run the machine out of memory. """
                 sqlCmd=select([self.vcfBases])
@@ -506,7 +514,8 @@ class mixtureReader():
         def read_selection(self, selection):
                 """ reads the results at the positions in selection into memory as a pandas dataframe """
                 sqlCmd=select([self.vcfBases]).where(self.vcfBases.c.pos.in_(selection))
-                self.df=pd.read_sql_query(sql=sqlCmd, con=self.engine)      
+                self.df=pd.read_sql_query(sql=sqlCmd, con=self.engine)
+
         def _generateSelectionDescription(self, sequenceGuid, selection=None, minDepth=None, minP=None):
                 """  generates an md5 hash which reflects the values passed to (selection), minDepth, and minP.   """
                 
@@ -546,10 +555,10 @@ class mixtureReader():
 
                 # we are instructed to use the summaryStore
                 if selectionDescription is None:
-                     # then we must compute a selectionDescription from the criteria passed to us.
+                     # then we must compute a selectionDescription from the criteria passed to us.  uses a hash to generate a unique value given inputs
                      selDes=self._generateSelectionDescription(sequenceGuid=self.sampleId, selection=selection, minP=None, minDepth=None)
                 else:
-                     selDes=selectionDescription
+                     selDes=selectionDescription                # we use what we're told.  it's the user's responsibility to make sure this is unique.
                      
                 # now try to recover
                 res=self.summaryStore.recover(this_selectionDescription=selDes) 
@@ -635,6 +644,7 @@ class mixtureReader():
                 #print(self.engine)
                 #print(sqlCmd)
                 self.df=pd.read_sql_query(sql=sqlCmd, con=self.engine)
+                #print(self.engine)
                 #print(self.df)          # debug
         def summarise_byFilter_fromdb(self, minDepth, minP):
                 """ summarises the statistics on the bases which pass selection by minDepth and minP;

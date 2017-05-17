@@ -67,7 +67,10 @@ nChecked=0
 for this_sampleId in sampleIds:
 	nChecked+=1
 	print("{0} {1} {2}".format(datetime.datetime.now(), nChecked, this_sampleId))
-	mmr1.report_by_gene(guid=this_sampleId)
+	try:
+		mmr1.report_by_gene(guid=this_sampleId)
+	except KeyError:
+		print("Skipping {0}".format(guid))
 exit()
 
 
@@ -100,8 +103,6 @@ cs=coll_subset.merge(maf, how='left', left_on='position', right_on='pos')
 cs.to_csv(os.path.join(outputDir, 'collsites_individually.csv'))
 
 exit()
-
-
 
 
 # cross tabulate
