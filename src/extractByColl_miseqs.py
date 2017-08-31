@@ -93,17 +93,22 @@ print(test_connstring)
 
 sstat=summaryStore(db=db1, engineName=test_connstring, dbDir=targetDir)
 
-# compute per-gene information on all samples
-sampleIds2=sampleIds
-mmr1=multiMixtureReader(sampleIds=sampleIds2, persistenceDir=targetDir, this_summaryStore=sstat)     #, this_summaryStore=sstat
-nChecked=0
-for this_sampleId in sampleIds:
-	nChecked+=1
-	print("{0} {1} {2}".format(datetime.datetime.now(), nChecked, this_sampleId))
-	try:
-		mmr1.report_by_gene(guid=this_sampleId, report_to_directory = reportDir)
-	except KeyError:
-		print("Skipping {0}".format(guid))
+
+nLineagesTested=0
+mmr1=multiMixtureReader(sampleIds=sampleIds, persistenceDir=targetDir, this_summaryStore=sstat)     #, this_summaryStore=sstat
+
+for lineage in sorted(deep_branches.keys()):
+	print(lineage, len(deep_branches[lineage]))
+	mmr1.summarise_selection(selection=deep_branches[lineage], this_selectionDescription=lineage)
+	nLineagesTested+=1
+	if nLineagesTested==1:
+		resdf = mmr1.df
+	else:
+		resdf = resdf.append(mmr1.df, ignore_index=True)
+
+print("Lineage summary complete")
+
+resdf.to_csv(os.path.join(reportDir, 'collsites.csv'))
 
 
 
