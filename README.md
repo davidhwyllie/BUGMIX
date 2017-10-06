@@ -1,7 +1,7 @@
-# TBMIX
-Study mixtures of TB sequences in VCF files
+# BUGMIX
+Allows storage and fast random access to read depths in VCF files derived from bacterial reference mapping.
 
-This includes four main classes:
+BugMix includes four main classes:
 * vcfStore- parses VCF files, computing minor allele frequencies and storing them in on-disc highly indexed sqlite databases, one per vcf file.
 * mixtureReader - extracts information from one vcfStore'd item.  Various methods are available extracting useful information 
 * multiMixtureReader - extracts information from multiple vcfStore'd items.  
@@ -10,4 +10,6 @@ This includes four main classes:
              - this ensures that computations, which may be expensive, only occur once.
              - the data is accessible from the RDBMS level but the persistence is transparent if using the mixture & multiMixtureReader classes.
              
-Uses cases addressed concern the identification of mixed samples of TB.
+Use cases addressed with this component concern 
+- the identification of mixed samples of TB.
+- identification of regions where mis-mapping may have occurred
