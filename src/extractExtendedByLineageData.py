@@ -75,8 +75,7 @@ for lineage in sorted(deep_branches.keys()):
 		resdf = mmr1.df
 	else:
 		resdf = resdf.append(mmr1.df, ignore_index=True)
-	### BUG: it only opens one database connection
-	### and it gives the same answer for everything.
+
 
 print("Summary complete")
 
